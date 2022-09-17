@@ -1,134 +1,122 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 import numpy as np
 import tqdm
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer, make_column_transformer
-from sklearn.model_selection import cross_val_score, cross_validate
+from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
-from skopt.space import Dimension
 from skopt.utils import use_named_args
 from skopt import gp_minimize
-from myml.optimization.metric import Metric, is_better
+from myml.optimization.metric import Metric, is_better, translate_metric
+from myml.optimization.search import HyperparameterSearchSpace, ModelSearchSpace, PipelineSearchSpace, SearchSpace
+from myml.utils import Features, Target
 
 
-class HyperparameterOptimizer:
-    def __init__(self, estimator: BaseEstimator, metric: Metric, evaluations: int = 100, cv: int = 5, n_jobs: int = 1, seed: Optional[int] = None) -> None:
+class OptimizationResults(NamedTuple):
+    evaluation: float
+    hyperparameters: Dict[str, Any] = {}
+    estimator: BaseEstimator = None
+    column_transformer: ColumnTransformer = None
+
+
+class OptimizationConfig(NamedTuple):
+    metric: Metric
+    evaluations: int = 100
+    cv: int = 5
+    n_jobs: int = 1
+    seed: Optional[int] = None
+
+
+class Optimizer(ABC):
+    results: List[OptimizationResults] = []
+
+    @property
+    @abstractmethod
+    def search_space(self) -> SearchSpace:
+        """ Search space of the optimizer. """
+
+    @search_space.setter
+    @abstractmethod
+    def search_space(self, search_space: SearchSpace) -> None:
+        """ Search space of the optimizer. """
+
+    @abstractmethod
+    def optimize(self, X: Features, y: Target) -> OptimizationResults:
+        """ Optimize given the features and targets. """
+
+
+class HyperparameterOptimizer(Optimizer):
+    def __init__(self, estimator: BaseEstimator, config: OptimizationConfig) -> None:
         self.estimator = estimator
-        self.metric = metric
-        self.evaluations = evaluations
-        self.cv = cv
-        self.n_jobs = n_jobs
-        self.seed = seed
-        self._search_space: List[Dimension] = []
-        self.results: List[Dict[str, Any]] = []
+        self.config = config
+        self._search_space: HyperparameterSearchSpace = HyperparameterSearchSpace()
         self.preprocess: TransformerMixin = None
 
     @property
-    def search_space(self) -> Dict[str, Dimension]:
-        return {dim.name: dim for dim in self._search_space}
+    def search_space(self) -> HyperparameterSearchSpace:
+        return self._search_space
 
     @search_space.setter
-    def search_space(self, search_space: Dict[str, Dimension]) -> None:
-        self._search_space.clear()
-        for name in search_space:
-            search_space[name].name = name
-            self._search_space.append(search_space[name])
-        
-    def _translate_metric(self, value: float) -> float:
-        if self.metric.value.is_maximize:
-            return -value
-        elif self.metric.value.is_minimize:
-            return value
+    def search_space(self, search_space: HyperparameterSearchSpace) -> None:
+        self._search_space = search_space
 
     def _setup_estimator(self, params: Dict[str, Any]) -> BaseEstimator:
-        if self.seed is not None and 'random_state' in vars(self.estimator):
-            self.estimator.random_state = self.seed
+        self.estimator.random_state = self.config.seed
         self.estimator.set_params(**params)
-        est = self.estimator
-        if self.preprocess is not None:
-            est = make_pipeline(self.preprocess, self.estimator)
-        return est
+        return self.estimator if self.preprocess is None else make_pipeline(self.preprocess, self.estimator)
 
-    def get_objective(self, X, y) -> Callable[..., float]:
-        @use_named_args(self._search_space)
+    def _get_objective(self, X, y) -> Callable[..., float]:
+        @use_named_args(list(self._search_space))
         def objective(**params) -> float:
             est = self._setup_estimator(params)
 
             mean_score = np.mean(cross_val_score(est, X, y,
-                                 cv=self.cv, n_jobs=self.n_jobs, scoring=self.metric.value.sk_name))
-            mean_score = self._translate_metric(mean_score)
+                                 cv=self.config.cv, n_jobs=self.config.n_jobs, scoring=self.config.metric.value.sk_name))
+            mean_score = translate_metric(self.config.metric, mean_score)
             return mean_score
 
         return objective
 
     def _update_progress_bar(self, res: Any) -> None:
-        self.results.append({'model': self.estimator, 'params': self._make_params(res.x), 'score': res.fun})
+        self.results.append(OptimizationResults(evaluation=translate_metric(self.config.metric, res.fun), hyperparameters=self._make_params(res.x), estimator=self.estimator))
         self._best_result = min(res.fun, self._best_result)
         self._progress_bar.set_postfix({'best': self._best_result})
         self._progress_bar.update(1)
 
     def _make_params(self, params_list: List[Any]) -> Dict[str, Any]:
         params = {}
-        for i, x in enumerate(params_list):
-            params[self._search_space[i].name] = x
+        for dim, val in zip(self._search_space, params_list):
+            params[dim.name] = val
         return params
 
-    def optimize(self, X, y) -> Tuple[Dict[str, Any], float]:
+    def optimize(self, X: Features, y: Target) -> OptimizationResults:
         self.results.clear()
         self._best_result = np.inf
-        with tqdm.tqdm(total = self.evaluations, postfix={'best': self._best_result}, desc=f'Optimizing {self.estimator.__class__.__name__}') as self._progress_bar:
+        with tqdm.tqdm(total = self.config.evaluations, postfix={'best': self._best_result}, desc=f'Optimizing {self.estimator.__class__.__name__}') as self._progress_bar:
             result = gp_minimize(
-                self.get_objective(X, y),
+                self._get_objective(X, y),
                 self._search_space,
-                n_calls=self.evaluations,
-                random_state=self.seed,
+                n_calls=self.config.evaluations,
+                random_state=self.config.seed,
                 callback=[self._update_progress_bar]
             )
 
-        best_params = self._make_params(result.x)
-        best_eval = self._translate_metric(result.fun)
-
-        return best_params, best_eval
-    
-    def validate(self, best_params: Dict[str, Any], X, y, metrics: List[Metric]) -> Dict[str, float]:
-        est = self._setup_estimator(best_params)
-        scores = cross_validate(est, X, y, cv=self.cv, n_jobs=self.n_jobs, scoring=[m.value.sk_name for m in metrics])
-        summary = {}
-        for k in scores:
-            if 'test' in k:
-                current = scores[k]
-                summary[f'mean_validation_{k[5:]}'] = np.mean(current)
-                summary[f'std_validation_{k[5:]}'] = np.std(current)
-
-        return summary
+        return OptimizationResults(evaluation=translate_metric(self.config.metric, result.fun), hyperparameters=self._make_params(result.x), estimator=self.estimator)
 
 
-class ModelChooser:
-    def __init__(self, metric: Metric, evaluations: int = 100, cv: int = 5, n_jobs: int = 1, seed: Optional[int] = None) -> None:
-        self.metric = metric
-        self.evaluations = evaluations
-        self.cv = cv
-        self.n_jobs = n_jobs
-        self.seed = seed
-        self.optimizer = HyperparameterOptimizer(
-            BaseEstimator(), metric, evaluations, cv, n_jobs, seed)
-        self._search_space: Dict[BaseEstimator, Dict[str, Dimension]] = {}
-        self.results: List[Dict[str, Any]] = []
-        self.best_params: Dict[BaseEstimator, Dict[str, Any]] = {}
+class ModelChooser(Optimizer):
+    def __init__(self, config: OptimizationConfig, optimizer: Optional[HyperparameterOptimizer] = None) -> None:
+        self.config = config
+        self.optimizer = optimizer if optimizer is not None else HyperparameterOptimizer(BaseEstimator(), config)
+        self._search_space: ModelSearchSpace = ModelSearchSpace()
 
     @property
-    def search_space(self) -> Dict[BaseEstimator, Dict[str, Dimension]]:
+    def search_space(self) -> ModelSearchSpace:
         return self._search_space
 
     @search_space.setter
-    def search_space(self, search_space: Dict[BaseEstimator, Dict[str, Dimension]]) -> None:
-        for estimator in search_space:
-            assert isinstance(estimator, BaseEstimator)
-            for param in search_space[estimator]:
-                assert type(param) is str
-                assert isinstance(search_space[estimator][param], Dimension)
+    def search_space(self, search_space: ModelSearchSpace) -> None:
         self._search_space = search_space
     
     @property
@@ -139,65 +127,61 @@ class ModelChooser:
     def preprocess(self, value: TransformerMixin):
         self.optimizer.preprocess = value
 
-    def optimize(self, X, y) -> Tuple[BaseEstimator, Dict[str, Any], float]:
+    def _optimize_hyperparameters(self, estimator: BaseEstimator, X: Features, y: Target) -> OptimizationResults:
+        self.optimizer.estimator = estimator
+        self.optimizer.search_space = self._search_space[estimator]
+        return self.optimizer.optimize(X, y)
+
+    def optimize(self, X: Features, y: Target) -> OptimizationResults:
         self.results.clear()
-        best_estimator = None
-        best_params = None
-        best_result = None
-        with tqdm.tqdm(self._search_space, desc='ModelChooser', postfix={'best': best_result}) as pbar:
+        best_results: OptimizationResults = OptimizationResults(evaluation=None)
+        with tqdm.tqdm(self._search_space, desc='ModelChooser', postfix={'best': best_results.evaluation}) as pbar:
             for estimator in pbar:
-                self.optimizer.estimator = estimator
-                self.optimizer.search_space = self._search_space[estimator]
-                params, result = self.optimizer.optimize(X, y)
-                self.best_params[estimator] = params
+                optimization_results = self._optimize_hyperparameters(estimator, X, y)
                 self.results.extend(self.optimizer.results)
-                if is_better(self.metric, result, best_result):
-                    best_estimator = estimator
-                    best_params = params
-                    best_result = result
-                pbar.set_postfix({'best': best_result})
+                
+                if is_better(self.config.metric, optimization_results.evaluation, best_results.evaluation):
+                    best_results = optimization_results
 
-        return best_estimator, best_params, best_result
+                pbar.set_postfix({'best': best_results.evaluation})
+
+        return best_results
 
 
-class PipelineChooser(ModelChooser):
-    def __init__(self, metric: Metric, evaluations: int = 100, cv: int = 5, n_jobs: int = 1, seed: Optional[int] = None) -> None:
-        super().__init__(metric, evaluations, cv, n_jobs, seed)
-        self._pipeline_search_space: List[List[Tuple[TransformerMixin, List[str]]]] = {}
-        self.pipeline_results: List[Dict[str, Any]] = []
+class PipelineChooser(Optimizer):
+    def __init__(self, config: OptimizationConfig, model_chooser: Optional[ModelChooser] = None) -> None:
+        self.config = config
+        self.model_chooser = model_chooser if model_chooser is not None else ModelChooser(config)
+        self._search_space: PipelineSearchSpace = PipelineSearchSpace()
     
     @property
-    def pipeline_search_space(self) -> List[List[Tuple[TransformerMixin, List[str]]]]:
-        return self._pipeline_search_space
+    def search_space(self) -> PipelineSearchSpace:
+        return self._search_space
 
-    @pipeline_search_space.setter
-    def pipeline_search_space(self, pipeline_search_space: List[List[Tuple[TransformerMixin, List[str]]]]) -> None:
-        for option in pipeline_search_space:
-            for transformer, _ in option:
-                assert isinstance(transformer, TransformerMixin)
-        self._pipeline_search_space = pipeline_search_space
+    @search_space.setter
+    def search_space(self, search_space: PipelineSearchSpace) -> None:
+        self._search_space = search_space
     
-    def optimize(self, X, y) -> Tuple[ColumnTransformer, BaseEstimator, Dict[str, Any], float]:
-        self.pipeline_results.clear()
-        best_ct = None
-        best_estimator = None
-        best_params = None
-        best_result = None
-        with tqdm.tqdm(self._pipeline_search_space, desc='PipelineChooser', postfix={'best': best_result}) as pbar:
+    def _optimize_models(self, ct: ColumnTransformer, X: Features, y: Target) -> OptimizationResults:
+        self.model_chooser.preprocess = ct
+        results = self.model_chooser.optimize(X, y)
+        return OptimizationResults(evaluation=results.evaluation, hyperparameters=results.hyperparameters, estimator=results.estimator, column_transformer=ct)
+    
+    def optimize(self, X, y) -> OptimizationResults:
+        self.results.clear()
+        best_results: OptimizationResults = OptimizationResults(evaluation=None)
+        with tqdm.tqdm(self._search_space, desc='PipelineChooser', postfix={'best': best_results.evaluation}) as pbar:
             for option in pbar:
                 ct = make_column_transformer(*option)
-                self.preprocess = ct
-                est, params, result = super().optimize(X, y)
-                est.set_params(**params)
-                pipe = make_pipeline(ct, est)
-                for res in self.results:
-                    self.pipeline_results.append({'model': pipe, 'params': res['params'], 'score': res['score']})
-                if is_better(self.metric, result, best_result):
-                    best_ct = ct
-                    best_estimator = est
-                    best_params = params
-                    best_result = result
-                pbar.set_postfix({'best': best_result})
+                optimization_results = self._optimize_models(ct, X, y)
+
+                for res in self.model_chooser.results:
+                    self.results.append(OptimizationResults(evaluation=res.evaluation, hyperparameters=res.hyperparameters, estimator=res.estimator, column_transformer=ct))
+
+                if is_better(self.config.metric, optimization_results.evaluation, best_results.evaluation):
+                    best_results = optimization_results
+
+                pbar.set_postfix({'best': best_results.evaluation})
         
-        return best_ct, best_estimator, best_params, best_result
+        return best_results
     

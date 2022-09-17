@@ -40,6 +40,17 @@ class Metric(Enum):
     def value(self) -> MetricConfig:
         return super().value
 
+def _get_metric_config(metric: Metric | MetricConfig) -> MetricConfig:
+    return metric.value if isinstance(metric, Metric) else metric
+
 def is_better(metric: Metric | MetricConfig, value: float, other: float):
-    mtc: MetricConfig = metric.value if isinstance(metric, Metric) else metric
+    mtc: MetricConfig = _get_metric_config(metric)
     return (other is None) or (mtc.is_maximize and value > other) or (mtc.is_minimize and value < other)
+
+def translate_metric(metric: Metric | MetricConfig, value: float) -> float:
+    mtc: MetricConfig = _get_metric_config(metric)
+    if mtc.is_maximize:
+        return -value
+    elif mtc.is_minimize:
+        return value
+    raise ValueError()
