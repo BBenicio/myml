@@ -1,8 +1,7 @@
 import pandas as pd
 from myml.optimization.optimizer import OptimizationConfig, PipelineChooser, ModelChooser, HyperparameterOptimizer
 from myml.optimization.metric import Metric
-from myml.optimization.search import HyperparameterSearchSpace, ModelSearchSpace, PipelineSearchSpace
-from myml.utils import ProblemType
+from myml.optimization.search import HyperparameterSearchSpace, PipelineSearchSpace
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from skopt.space import Real, Integer
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, FunctionTransformer

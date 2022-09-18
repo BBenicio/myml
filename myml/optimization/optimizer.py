@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 import numpy as np
-import tqdm
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer, make_column_transformer
@@ -31,6 +30,8 @@ class OptimizationConfig(NamedTuple):
 class Optimizer(ABC):
     results: List[OptimizationResults] = []
 
+    progress_callback: Callable[[Dict[str, Any], int], None] = None
+
     @property
     @abstractmethod
     def search_space(self) -> SearchSpace:
@@ -44,6 +45,10 @@ class Optimizer(ABC):
     @abstractmethod
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
         """ Optimize given the features and targets. """
+    
+    def _update_progress(self, data: Dict[str, Any] = None, total: int = 0):
+        if self.progress_callback is not None:
+            self.progress_callback(data, total)
 
 
 class HyperparameterOptimizer(Optimizer):
@@ -78,11 +83,10 @@ class HyperparameterOptimizer(Optimizer):
 
         return objective
 
-    def _update_progress_bar(self, res: Any) -> None:
+    def _optimization_step(self, res: Any) -> None:
         self.results.append(OptimizationResults(evaluation=translate_metric(self.config.metric, res.fun), hyperparameters=self._make_params(res.x), estimator=self.estimator))
         self._best_result = min(res.fun, self._best_result)
-        self._progress_bar.set_postfix({'best': self._best_result})
-        self._progress_bar.update(1)
+        self._update_progress({'best': self._best_result}, self.config.evaluations)
 
     def _make_params(self, params_list: List[Any]) -> Dict[str, Any]:
         params = {}
@@ -93,13 +97,13 @@ class HyperparameterOptimizer(Optimizer):
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
         self.results.clear()
         self._best_result = np.inf
-        with tqdm.tqdm(total = self.config.evaluations, postfix={'best': self._best_result}, desc=f'Optimizing {self.estimator.__class__.__name__}') as self._progress_bar:
+        for _ in range(self.config.evaluations):
             result = gp_minimize(
                 self._get_objective(X, y),
                 self._search_space,
                 n_calls=self.config.evaluations,
                 random_state=self.config.seed,
-                callback=[self._update_progress_bar]
+                callback=[self._optimization_step]
             )
 
         return OptimizationResults(evaluation=translate_metric(self.config.metric, result.fun), hyperparameters=self._make_params(result.x), estimator=self.estimator)
@@ -135,15 +139,15 @@ class ModelChooser(Optimizer):
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
         self.results.clear()
         best_results: OptimizationResults = OptimizationResults(evaluation=None)
-        with tqdm.tqdm(self._search_space, desc='ModelChooser', postfix={'best': best_results.evaluation}) as pbar:
-            for estimator in pbar:
-                optimization_results = self._optimize_hyperparameters(estimator, X, y)
-                self.results.extend(self.optimizer.results)
-                
-                if is_better(self.config.metric, optimization_results.evaluation, best_results.evaluation):
-                    best_results = optimization_results
+        
+        for estimator in self._search_space:
+            optimization_results = self._optimize_hyperparameters(estimator, X, y)
+            self.results.extend(self.optimizer.results)
+            
+            if is_better(self.config.metric, optimization_results.evaluation, best_results.evaluation):
+                best_results = optimization_results
 
-                pbar.set_postfix({'best': best_results.evaluation})
+            self._update_progress({'best': best_results.evaluation}, len(self._search_space))
 
         return best_results
 
@@ -167,21 +171,21 @@ class PipelineChooser(Optimizer):
         results = self.model_chooser.optimize(X, y)
         return OptimizationResults(evaluation=results.evaluation, hyperparameters=results.hyperparameters, estimator=results.estimator, column_transformer=ct)
     
-    def optimize(self, X, y) -> OptimizationResults:
+    def optimize(self, X: Features, y: Target) -> OptimizationResults:
         self.results.clear()
         best_results: OptimizationResults = OptimizationResults(evaluation=None)
-        with tqdm.tqdm(self._search_space, desc='PipelineChooser', postfix={'best': best_results.evaluation}) as pbar:
-            for option in pbar:
-                ct = make_column_transformer(*option)
-                optimization_results = self._optimize_models(ct, X, y)
 
-                for res in self.model_chooser.results:
-                    self.results.append(OptimizationResults(evaluation=res.evaluation, hyperparameters=res.hyperparameters, estimator=res.estimator, column_transformer=ct))
+        for option in self._search_space:
+            ct = make_column_transformer(*option)
+            optimization_results = self._optimize_models(ct, X, y)
 
-                if is_better(self.config.metric, optimization_results.evaluation, best_results.evaluation):
-                    best_results = optimization_results
+            for res in self.model_chooser.results:
+                self.results.append(OptimizationResults(evaluation=res.evaluation, hyperparameters=res.hyperparameters, estimator=res.estimator, column_transformer=ct))
 
-                pbar.set_postfix({'best': best_results.evaluation})
+            if is_better(self.config.metric, optimization_results.evaluation, best_results.evaluation):
+                best_results = optimization_results
+
+            self._update_progress({'best': best_results.evaluation}, len(self._search_space))
         
         return best_results
     

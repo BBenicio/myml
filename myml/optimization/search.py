@@ -1,6 +1,4 @@
-from abc import ABC, abstractmethod
-from copy import deepcopy
-from typing import Any, Dict, Iterator, List, NamedTuple
+from typing import Iterator, List, NamedTuple
 from skopt.space import Dimension
 from sklearn.base import BaseEstimator, TransformerMixin
 
