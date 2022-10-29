@@ -1,5 +1,5 @@
 import pandas as pd
-from myml.optimization.optimizer import OptimizationConfig, PipelineChooser, ModelChooser, HyperparameterOptimizer
+from myml.optimization.optimizer import OptimizationConfig, PipelineChooser, ModelChooser, HyperparameterOptimizer, OptimizerProgressBar
 from myml.optimization.metric import Metric
 from myml.optimization.search import HyperparameterSearchSpace, PipelineSearchSpace
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, Fu
 
 def test_hyperparameteroptimizer(data: pd.DataFrame, target: pd.Series):
     est = GradientBoostingClassifier(n_estimators=50, random_state=0)
-    config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=-1, seed=0)
+    config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=2, seed=0)
     optimizer = HyperparameterOptimizer(est, config)
     optimizer.search_space = HyperparameterSearchSpace(
         max_depth = Integer(1, 5),
@@ -23,7 +23,7 @@ def test_hyperparameteroptimizer(data: pd.DataFrame, target: pd.Series):
     assert results.evaluation >= 0.8
 
 def test_modelchooser(data: pd.DataFrame, target: pd.Series):
-    config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=-1, seed=0)
+    config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=2, seed=0)
     chooser = ModelChooser(config)
     
     chooser.search_space[GradientBoostingClassifier(n_estimators=50, random_state=0)] = HyperparameterSearchSpace(
@@ -46,7 +46,8 @@ def test_modelchooser(data: pd.DataFrame, target: pd.Series):
     assert results.evaluation >= 0.8
 
 def test_pipelinechooser(data: pd.DataFrame, target: pd.Series):
-    config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=-1, seed=0)
+    config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=2, seed=0)
+
     chooser = PipelineChooser(config)
     
     chooser.search_space = PipelineSearchSpace(

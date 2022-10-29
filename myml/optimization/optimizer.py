@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import tqdm
 import numpy as np
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -28,8 +29,6 @@ class OptimizationConfig(NamedTuple):
 
 
 class Optimizer(ABC):
-    results: List[OptimizationResults] = []
-
     progress_callback: Callable[[Dict[str, Any], int], None] = None
 
     @property
@@ -84,7 +83,6 @@ class HyperparameterOptimizer(Optimizer):
         return objective
 
     def _optimization_step(self, res: Any) -> None:
-        self.results.append(OptimizationResults(evaluation=translate_metric(self.config.metric, res.fun), hyperparameters=self._make_params(res.x), estimator=self.estimator))
         self._best_result = min(res.fun, self._best_result)
         self._update_progress({'best': self._best_result}, self.config.evaluations)
 
@@ -95,16 +93,14 @@ class HyperparameterOptimizer(Optimizer):
         return params
 
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
-        self.results.clear()
         self._best_result = np.inf
-        for _ in range(self.config.evaluations):
-            result = gp_minimize(
-                self._get_objective(X, y),
-                self._search_space,
-                n_calls=self.config.evaluations,
-                random_state=self.config.seed,
-                callback=[self._optimization_step]
-            )
+        result = gp_minimize(
+            self._get_objective(X, y),
+            self._search_space,
+            n_calls=self.config.evaluations,
+            random_state=self.config.seed,
+            callback=[self._optimization_step]
+        )
 
         return OptimizationResults(evaluation=translate_metric(self.config.metric, result.fun), hyperparameters=self._make_params(result.x), estimator=self.estimator)
 
@@ -137,12 +133,10 @@ class ModelChooser(Optimizer):
         return self.optimizer.optimize(X, y)
 
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
-        self.results.clear()
         best_results: OptimizationResults = OptimizationResults(evaluation=None)
         
         for estimator in self._search_space:
             optimization_results = self._optimize_hyperparameters(estimator, X, y)
-            self.results.extend(self.optimizer.results)
             
             if is_better(self.config.metric, optimization_results.evaluation, best_results.evaluation):
                 best_results = optimization_results
@@ -172,15 +166,11 @@ class PipelineChooser(Optimizer):
         return OptimizationResults(evaluation=results.evaluation, hyperparameters=results.hyperparameters, estimator=results.estimator, column_transformer=ct)
     
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
-        self.results.clear()
         best_results: OptimizationResults = OptimizationResults(evaluation=None)
 
         for option in self._search_space:
             ct = make_column_transformer(*option)
             optimization_results = self._optimize_models(ct, X, y)
-
-            for res in self.model_chooser.results:
-                self.results.append(OptimizationResults(evaluation=res.evaluation, hyperparameters=res.hyperparameters, estimator=res.estimator, column_transformer=ct))
 
             if is_better(self.config.metric, optimization_results.evaluation, best_results.evaluation):
                 best_results = optimization_results
@@ -189,3 +179,25 @@ class PipelineChooser(Optimizer):
         
         return best_results
     
+
+class OptimizerProgressBar:
+    def __init__(self, name: str, optimizer: Optimizer) -> None:
+        self.name = name
+        optimizer.progress_callback = self._callback
+        self.pbar: tqdm.tqdm = None
+        self.i = 0
+    
+    def _callback(self, data: Dict[str, Any], total: int) -> None:
+        self.i += 1
+        if self.pbar is None:
+            self.pbar = tqdm.tqdm(total=total, desc=self.name)
+        
+        if data is not None:
+            self.pbar.set_postfix(data)
+
+        self.pbar.update(1)
+        
+        if self.i == total:
+            self.i = 0
+            self.pbar.close()
+            self.pbar = None
