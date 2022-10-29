@@ -6,8 +6,8 @@ from myml.utils import ProblemType
 class MetricConfig:
     Type = Literal['maximize', 'minimize']
 
-    def __init__(self, sk_name: str, type: "MetricConfig.Type", used_for: ProblemType) -> None:
-        self.sk_name = sk_name
+    def __init__(self, sklearn_name: str, type: "MetricConfig.Type", used_for: ProblemType) -> None:
+        self.sklearn_name = sklearn_name
         self.type = type
         self.used_for = used_for
 

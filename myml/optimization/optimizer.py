@@ -73,24 +73,37 @@ class HyperparameterOptimizer(Optimizer):
     def _get_objective(self, X, y) -> Callable[..., float]:
         @use_named_args(list(self._search_space))
         def objective(**params) -> float:
-            est = self._setup_estimator(params)
+            estimator = self._setup_estimator(params)
 
-            mean_score = np.mean(cross_val_score(est, X, y,
-                                 cv=self.config.cv, n_jobs=self.config.n_jobs, scoring=self.config.metric.value.sk_name))
+            scores = cross_val_score(
+                estimator, X, y,
+                cv=self.config.cv,
+                n_jobs=self.config.n_jobs,
+                scoring=self.config.metric.value.sklearn_name
+            )
+
+            mean_score = np.mean(scores)
             mean_score = translate_metric(self.config.metric, mean_score)
             return mean_score
 
         return objective
 
-    def _optimization_step(self, res: Any) -> None:
-        self._best_result = min(res.fun, self._best_result)
+    def _optimization_step(self, result: Any) -> None:
+        self._best_result = min(result.fun, self._best_result)
         self._update_progress({'best': self._best_result}, self.config.evaluations)
 
     def _make_params(self, params_list: List[Any]) -> Dict[str, Any]:
         params = {}
-        for dim, val in zip(self._search_space, params_list):
-            params[dim.name] = val
+        for dimension, value in zip(self._search_space, params_list):
+            params[dimension.name] = value
         return params
+
+    def _make_results(self, result: Any) -> OptimizationResults:
+        return OptimizationResults(
+            evaluation=translate_metric(self.config.metric, result.fun),
+            hyperparameters=self._make_params(result.x),
+            estimator=self.estimator
+        )
 
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
         self._best_result = np.inf
@@ -102,7 +115,7 @@ class HyperparameterOptimizer(Optimizer):
             callback=[self._optimization_step]
         )
 
-        return OptimizationResults(evaluation=translate_metric(self.config.metric, result.fun), hyperparameters=self._make_params(result.x), estimator=self.estimator)
+        return self._make_results(result)
 
 
 class ModelChooser(Optimizer):
@@ -163,7 +176,12 @@ class PipelineChooser(Optimizer):
     def _optimize_models(self, ct: ColumnTransformer, X: Features, y: Target) -> OptimizationResults:
         self.model_chooser.preprocess = ct
         results = self.model_chooser.optimize(X, y)
-        return OptimizationResults(evaluation=results.evaluation, hyperparameters=results.hyperparameters, estimator=results.estimator, column_transformer=ct)
+        return OptimizationResults(
+            evaluation=results.evaluation,
+            hyperparameters=results.hyperparameters,
+            estimator=results.estimator,
+            column_transformer=ct
+        )
     
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
         best_results: OptimizationResults = OptimizationResults(evaluation=None)
@@ -187,17 +205,29 @@ class OptimizerProgressBar:
         self.pbar: tqdm.tqdm = None
         self.i = 0
     
-    def _callback(self, data: Dict[str, Any], total: int) -> None:
-        self.i += 1
+    def _initialize_progress_bar(self, total: int) -> None:
         if self.pbar is None:
             self.pbar = tqdm.tqdm(total=total, desc=self.name)
-        
+    
+    def _show_data(self, data: Dict[str, Any]) -> None:
         if data is not None:
             self.pbar.set_postfix(data)
-
+    
+    def _update_progress(self) -> None:
+        self.i += 1
         self.pbar.update(1)
-        
-        if self.i == total:
+
+    def _ended(self, total: int) -> None:
+        return self.i >= total
+
+    def _close_progress_bar_on_end(self, total: int) -> None:
+        if self._ended(total):
             self.i = 0
             self.pbar.close()
             self.pbar = None
+
+    def _callback(self, data: Dict[str, Any], total: int) -> None:
+        self._initialize_progress_bar(total)
+        self._show_data(data)
+        self._update_progress()
+        self._close_progress_bar_on_end(total)

@@ -122,7 +122,7 @@ class AutoML(AutoPipelineChooser):
                 result = voter_result
 
         pipeline.fit(X_train, y_train)
-        scorer = get_scorer(self.metric.value.sk_name)
+        scorer = get_scorer(self.metric.value.sklearn_name)
         test_score = scorer(pipeline, X_test, y_test)
         
         return pipeline, result, test_score
@@ -140,4 +140,4 @@ class AutoML(AutoPipelineChooser):
         elif self.problem_type == ProblemType.regression:
             voter = VotingRegressor(top_estimators)
         
-        return voter, np.mean(cross_val_score(voter, X, y, scoring=self.metric.value.sk_name, cv=self.cv, n_jobs=self.n_jobs))
+        return voter, np.mean(cross_val_score(voter, X, y, scoring=self.metric.value.sklearn_name, cv=self.cv, n_jobs=self.n_jobs))
