@@ -1,2 +1,2 @@
-from .categorical import preprocessors as categorical_preprocessors
-from .numeric import preprocessors as numeric_preprocessors
+from ._categorical import preprocessors as categorical_preprocessors
+from ._numeric import preprocessors as numeric_preprocessors

@@ -99,9 +99,12 @@ class HyperparameterOptimizer(Optimizer):
         return params
 
     def _make_results(self, result: Any) -> OptimizationResults:
+        params = self._make_params(result.x)
+        self.estimator.set_params(**params)
+        
         return OptimizationResults(
             evaluation=translate_metric(self.config.metric, result.fun),
-            hyperparameters=self._make_params(result.x),
+            hyperparameters=params,
             estimator=self.estimator
         )
 
