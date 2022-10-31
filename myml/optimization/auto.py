@@ -1,24 +1,25 @@
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
-import myml
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple
 from myml import models
-from myml.optimization.metric import Metric
 from myml.optimization.optimizer import OptimizationConfig, OptimizerProgressBar, PipelineChooser
 from myml.optimization.search import PipelineSearchSpace, Preprocessor
-from myml.utils import DataType, Features, ProblemType, Target
-from myml.preprocessors import categorical_preprocessors, numeric_preprocessors
+from myml.utils import DataType, Features, ProblemType, Target, filter_by_types, get_features_labels
+from myml.preprocessors import categorical_preprocessors, numeric_preprocessors, imputers
 from sklearn.base import TransformerMixin
-from sklearn.ensemble import VotingClassifier, VotingRegressor
-from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline, make_pipeline
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import get_scorer
 import numpy as np
-import pandas as pd
 
 
 class AutoConfig(NamedTuple):
     problem_type: ProblemType
     optimization_config: OptimizationConfig
+
+
+class AutoResults(NamedTuple):
+    pipeline: Pipeline
+    cv_results: float
+    test_results: Optional[float] = None
 
 
 class AutoPipelineChooser:
@@ -47,31 +48,49 @@ class AutoPipelineChooser:
     def _set_model_chooser_search_space(self):
         self.pipeline_chooser.model_chooser.search_space = models.estimators[self.config.problem_type]
     
-    def _combine_into_pipelines(self, features: List, preprocessors: List[TransformerMixin], pipelines: List[List[Preprocessor]]) -> List[List[Preprocessor]]:
-        new_pipelines = []
-        if len(features) > 0:
-            options = [(preprocessor, features) for preprocessor in preprocessors]
-            for pipe in pipelines:
-                for op in options:
-                    new_pipelines.append(pipe + [op])
+    def _get_starting_pipeline(self, X: Features) -> List[List[Preprocessor]]:
+        features_have_nan = np.any(np.isnan(X))
+        if features_have_nan:
+            return [[Preprocessor(imputer, get_features_labels(X))] for imputer in imputers]
         else:
-            new_pipelines = pipelines
+            return [[]]
+    
+    def _generate_options(self, features: List, transformers: List[TransformerMixin]) -> Iterator[Preprocessor]:
+        return (Preprocessor(transformer, features) for transformer in transformers)
 
+    def _add_options_to_pipelines(self, pipelines: List[List[Preprocessor]], options: List[Preprocessor]) -> List[List[Preprocessor]]:
+        new = []
+        for pipeline in pipelines:
+            for op in options:
+                new.append(pipeline + [op])
+
+        return new
+    
+    def _combine_with_pipelines(self, features: List, transformers: List[TransformerMixin], pipelines: List[List[Preprocessor]]) -> List[List[Preprocessor]]:
+        if len(features) == 0:
+            return pipelines
+
+        options = self._generate_options(features, transformers)
+        new_pipelines = self._add_options_to_pipelines(pipelines, options)
+        
         return new_pipelines
+    
+    def _convert_pipelines(self, pipelines: List[List[Preprocessor]]) -> PipelineSearchSpace:
+        converted_pipelines = {f'pipeline{i}': pipeline for i, pipeline in enumerate(pipelines)}
+        return PipelineSearchSpace(**converted_pipelines)
 
     def _assemble_search_space(self, X: Features):
         self._set_model_chooser_search_space()
         
-        features_have_nan = np.any(np.isnan(X))
-        pipelines = [[SimpleImputer()]] if features_have_nan else [[]]
-        pipelines = self._combine_into_pipelines(self.numeric_features, numeric_preprocessors, pipelines)
-        pipelines = self._combine_into_pipelines(self.categorical_features, categorical_preprocessors, pipelines)
-        self.pipeline_chooser.search_space = PipelineSearchSpace(**{f'pipeline_{i}': pipeline for i, pipeline in enumerate(pipelines)})
+        pipelines = self._get_starting_pipeline(X)
+        pipelines = self._combine_with_pipelines(self.numeric_features, numeric_preprocessors, pipelines)
+        pipelines = self._combine_with_pipelines(self.categorical_features, categorical_preprocessors, pipelines)
+        self.pipeline_chooser.search_space = self._convert_pipelines(pipelines)
         
-    def optimize(self, X: Features, y: Target) -> Tuple[Pipeline, float]:
+    def optimize(self, X: Features, y: Target) -> AutoResults:
         self._assemble_search_space(X)
         results = self.pipeline_chooser.optimize(X, y)
-        return make_pipeline(results.column_transformer, results.estimator), results.evaluation
+        return AutoResults(make_pipeline(results.column_transformer, results.estimator), results.evaluation)
 
 
 class AutoML(AutoPipelineChooser):
@@ -79,16 +98,15 @@ class AutoML(AutoPipelineChooser):
         super().__init__(config)
         self.test_size = test_size
     
+    def _get_default_or_override(self, X: Features, types: List[str], override: Optional[List[str]] = None) -> List:
+        if override is None:
+            return get_features_labels(filter_by_types(X, ['number']))
+        else:
+            return override
+    
     def _setup_features(self, X: Features, override_numeric_features: Optional[List[str]] = None, override_categorical_features: Optional[List[str]] = None) -> None:
-        if override_numeric_features is None:
-            self.numeric_features = X.select_dtypes(include=['number']).columns.to_list()
-        else:
-            self.numeric_features = override_numeric_features
-
-        if override_categorical_features is None:
-            self.categorical_features = X.select_dtypes(include=['object', 'category', 'bool']).columns.to_list()
-        else:
-            self.categorical_features = override_categorical_features
+        self.numeric_features = self._get_default_or_override(X, ['number'], override_numeric_features)
+        self.categorical_features = self._get_default_or_override(X, ['object', 'category', 'bool'], override_categorical_features)
         
     def _split_train_test(self, X: Features, y: Target) -> Tuple[Features, Features, Target, Target]:
         if self.config.problem_type == ProblemType.classification:
@@ -98,17 +116,17 @@ class AutoML(AutoPipelineChooser):
         return X_train, X_test, y_train, y_test
 
 
-    def optimize(self, X: Features, y: Target, override_numeric_features: Optional[List[str]] = None, override_categorical_features: Optional[List[str]] = None) -> Tuple[Pipeline, float, float]:
+    def optimize(self, X: Features, y: Target, override_numeric_features: Optional[List[str]] = None, override_categorical_features: Optional[List[str]] = None) -> AutoResults:
         self._setup_features(X, override_numeric_features, override_categorical_features)
         X_train, X_test, y_train, y_test = self._split_train_test(X, y)
 
-        pipeline, result = super().optimize(X_train, y_train)
+        results = super().optimize(X_train, y_train)
 
-        pipeline.fit(X_train, y_train)
+        results.pipeline.fit(X_train, y_train)
         scorer = get_scorer(self.config.optimization_config.metric.value.sklearn_name)
-        test_score = scorer(pipeline, X_test, y_test)
+        test_score = scorer(results.pipeline, X_test, y_test)
         
-        return pipeline, result, test_score
+        return AutoResults(results.pipeline, results.cv_results, test_score)
 
 
 class AutoProgressBar:

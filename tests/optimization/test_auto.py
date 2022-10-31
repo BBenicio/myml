@@ -4,6 +4,7 @@ from myml.optimization.metric import Metric
 from myml.optimization.optimizer import OptimizationConfig
 from myml.utils import ProblemType
 
+
 def test_autopipelinechooser(data: pd.DataFrame, target: pd.Series):
     config = AutoConfig(
         ProblemType.classification,
@@ -13,9 +14,9 @@ def test_autopipelinechooser(data: pd.DataFrame, target: pd.Series):
     AutoProgressBar('Auto', chooser)
     
     chooser.numeric_features = data.columns.to_list()
-    _, result = chooser.optimize(data, target)
-    print(result)
-    assert result >= 0.98
+    results = chooser.optimize(data, target)
+
+    assert results.cv_results >= 0.98
 
 def test_automl(data: pd.DataFrame, target: pd.Series):
     config = AutoConfig(
@@ -25,7 +26,6 @@ def test_automl(data: pd.DataFrame, target: pd.Series):
     chooser = AutoML(config)
     AutoProgressBar('Auto', chooser)
     
-    _, result, test_result = chooser.optimize(data, target)
+    results = chooser.optimize(data, target)
 
-    print(result, test_result)
-    assert result >= 0.97 and test_result >= 0.97
+    assert results.cv_results >= 0.97 and results.test_results >= 0.96
