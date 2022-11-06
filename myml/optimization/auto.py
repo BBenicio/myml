@@ -3,7 +3,7 @@ import warnings
 from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple
 from myml import models
 from myml.optimization.metric import is_better, sort_by_metric
-from myml.optimization.optimizer import OptimizationConfig, OptimizationResults, OptimizerProgressBar, PipelineChooser
+from myml.optimization.optimizer import OptimizationConfig, OptimizationResults, OptimizerProgressBar, PipelineChooser, CashOptimizer
 from myml.optimization.search import PipelineSearchSpace, Preprocessor
 from myml.utils import DataType, Features, ProblemType, Target, filter_by_types, get_features_labels
 from myml.preprocessors import categorical_preprocessors, numeric_preprocessors, imputers
@@ -29,7 +29,7 @@ class AutoPipelineChooser:
     def __init__(self, config: AutoConfig) -> None:
         self.config = config
 
-        self.pipeline_chooser = PipelineChooser(config.optimization_config)
+        self.pipeline_chooser = PipelineChooser(config.optimization_config, CashOptimizer(config.optimization_config))
         self.data_types: Dict[DataType, List[Any]] = {}
     
     @property
