@@ -1,5 +1,5 @@
 import pandas as pd
-from myml.optimization.optimizer import OptimizationConfig, PipelineChooser, ModelChooser, HyperparameterOptimizer, OptimizerProgressBar
+from myml.optimization.optimizer import OptimizationConfig, PipelineChooser, ModelChooser, HyperparameterOptimizer, OptimizerProgressBar, CashOptimizer
 from myml.optimization.metric import Metric
 from myml.optimization.search import HyperparameterSearchSpace, PipelineSearchSpace
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
@@ -71,6 +71,29 @@ def test_pipelinechooser(data: pd.DataFrame, target: pd.Series):
 
     results = chooser.optimize(data, target)
     assert isinstance(results.column_transformer.transformers[0][1], MinMaxScaler)
+    assert isinstance(results.estimator, GradientBoostingClassifier)
+    assert results.hyperparameters['max_depth'] == 2
+    assert results.evaluation >= 0.9
+
+def test_cashoptimizer(data: pd.DataFrame, target: pd.Series):
+    config = OptimizationConfig(Metric.f1, evaluations=20, cv=5, n_jobs=2, seed=0)
+    optimizer = CashOptimizer(config)
+    
+    optimizer.search_space[GradientBoostingClassifier(n_estimators=50, random_state=0)] = HyperparameterSearchSpace(
+        max_depth = Integer(1, 5),
+        learning_rate = Real(1e-5, 1e0, 'log-uniform'),
+        min_samples_split = Integer(2, 100),
+        min_samples_leaf = Integer(1, 100)
+    )
+    
+    optimizer.search_space[RandomForestClassifier(n_estimators=50, random_state=0)] = HyperparameterSearchSpace(
+        max_depth = Integer(1, 5),
+        min_samples_split = Integer(2, 100),
+        min_samples_leaf = Integer(1, 100)
+    )
+
+    results = optimizer.optimize(data, target)
+
     assert isinstance(results.estimator, GradientBoostingClassifier)
     assert results.hyperparameters['max_depth'] == 2
     assert results.evaluation >= 0.9

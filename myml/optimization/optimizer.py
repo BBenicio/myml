@@ -1,13 +1,15 @@
 from abc import ABC, abstractmethod
 import tqdm
 import numpy as np
+from copy import copy
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer, make_column_transformer
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import make_pipeline
 from skopt.utils import use_named_args
-from skopt import gp_minimize
+from skopt.space import Categorical
+from skopt import gp_minimize, forest_minimize
 from myml.optimization.metric import Metric, is_better, translate_metric
 from myml.optimization.search import HyperparameterSearchSpace, ModelSearchSpace, PipelineSearchSpace, SearchSpace
 from myml.utils import Features, Target
@@ -176,6 +178,100 @@ class ModelChooser(Optimizer):
             self._update_progress({'best': best_results.evaluation}, len(self._search_space))
 
         return best_results
+
+
+class CashOptimizer(ModelChooser):
+    def __init__(self, config: OptimizationConfig) -> None:
+        super().__init__(config, None)
+        self._preprocess: TransformerMixin = None
+        self._results: List[OptimizationResults] = []
+        self._hyperparameter_search_space: HyperparameterSearchSpace = None
+    
+    @property
+    def results(self) -> Iterator[OptimizationResults]:
+        yield from self._results
+    
+    @property
+    def preprocess(self) -> TransformerMixin:
+        return self._preprocess
+    
+    @preprocess.setter
+    def preprocess(self, value: TransformerMixin):
+        self._preprocess = value
+
+    def _get_search_space(self) -> HyperparameterSearchSpace:
+        total_space = HyperparameterSearchSpace()
+        total_space['[estimator]'] = Categorical(list(self.search_space.keys()))
+        for estimator in self.search_space:
+            search_space = self.search_space[estimator]
+            for dimension in search_space:
+                dim = copy(dimension)
+                name = f'{estimator.__class__.__name__.lower()}/{dim.name}'
+                total_space[name] = dim
+        
+        return total_space
+
+    def _setup_estimator(self, params: Dict[str, Any]) -> BaseEstimator:
+        estimator = params['[estimator]']
+        estimator.random_state = self.config.seed
+        relevant_params = {k.split('/')[1]: params[k] for k in params if estimator.__class__.__name__.lower() in k}
+        estimator.set_params(**relevant_params)
+        return estimator if self.preprocess is None else make_pipeline(self.preprocess, estimator)
+
+    def _get_objective(self, X, y) -> Callable[..., float]:
+        @use_named_args(list(self._hyperparameter_search_space))
+        def objective(**params) -> float:
+            estimator = self._setup_estimator(params)
+
+            scores = cross_val_score(
+                estimator, X, y,
+                cv=self.config.cv,
+                n_jobs=self.config.n_jobs,
+                scoring=self.config.metric.value.sklearn_name
+            )
+
+            mean_score = np.mean(scores)
+            mean_score = translate_metric(self.config.metric, mean_score)
+            return mean_score
+
+        return objective
+
+    def _optimization_step(self, result: Any) -> None:
+        self._results.append(self._make_results(result))
+        self._best_result = min(result.fun, self._best_result)
+        self._update_progress({'best': self._best_result}, self.config.evaluations)
+
+    def _make_params(self, params_list: List[Any]) -> Dict[str, Any]:
+        params = {}
+        for dimension, value in zip(self._hyperparameter_search_space, params_list):
+            params[dimension.name] = value
+        return params
+
+    def _make_results(self, result: Any) -> OptimizationResults:
+        params = self._make_params(result.x)
+        estimator = params['[estimator]']
+        relevant_params = {k.split('/')[1]: params[k] for k in params if k.split('/')[0] == estimator.__class__.__name__.lower()}
+        estimator.set_params(**relevant_params)
+        
+        return OptimizationResults(
+            evaluation=translate_metric(self.config.metric, result.fun),
+            hyperparameters=relevant_params,
+            estimator=estimator,
+            column_transformer=self.preprocess if isinstance(self.preprocess, ColumnTransformer) else None
+        )
+
+    def optimize(self, X: Features, y: Target) -> OptimizationResults:
+        self._hyperparameter_search_space = self._get_search_space()
+        self._best_result = np.inf
+        result = forest_minimize(
+            self._get_objective(X, y),
+            self._hyperparameter_search_space,
+            n_calls=self.config.evaluations,
+            random_state=self.config.seed,
+            callback=[self._optimization_step]
+        )
+
+        return self._make_results(result)
 
 
 class PipelineChooser(Optimizer):
