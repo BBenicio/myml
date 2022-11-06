@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import tqdm
 import numpy as np
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer, make_column_transformer
 from sklearn.model_selection import cross_val_score
@@ -33,6 +33,11 @@ class Optimizer(ABC):
 
     @property
     @abstractmethod
+    def results(self) -> Iterator[OptimizationResults]:
+        """ Results from each step of optimization """
+
+    @property
+    @abstractmethod
     def search_space(self) -> SearchSpace:
         """ Search space of the optimizer. """
 
@@ -56,6 +61,11 @@ class HyperparameterOptimizer(Optimizer):
         self.config = config
         self._search_space: HyperparameterSearchSpace = HyperparameterSearchSpace()
         self.preprocess: TransformerMixin = None
+        self._results: List[OptimizationResults] = []
+    
+    @property
+    def results(self) -> Iterator[OptimizationResults]:
+        yield from self._results
 
     @property
     def search_space(self) -> HyperparameterSearchSpace:
@@ -89,6 +99,7 @@ class HyperparameterOptimizer(Optimizer):
         return objective
 
     def _optimization_step(self, result: Any) -> None:
+        self._results.append(self._make_results(result))
         self._best_result = min(result.fun, self._best_result)
         self._update_progress({'best': self._best_result}, self.config.evaluations)
 
@@ -105,7 +116,8 @@ class HyperparameterOptimizer(Optimizer):
         return OptimizationResults(
             evaluation=translate_metric(self.config.metric, result.fun),
             hyperparameters=params,
-            estimator=self.estimator
+            estimator=self.estimator,
+            column_transformer=self.preprocess if isinstance(self.preprocess, ColumnTransformer) else None
         )
 
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
@@ -126,6 +138,10 @@ class ModelChooser(Optimizer):
         self.config = config
         self.optimizer = optimizer if optimizer is not None else HyperparameterOptimizer(BaseEstimator(), config)
         self._search_space: ModelSearchSpace = ModelSearchSpace()
+
+    @property
+    def results(self) -> Iterator[OptimizationResults]:
+        yield from self.optimizer.results
 
     @property
     def search_space(self) -> ModelSearchSpace:
@@ -167,6 +183,10 @@ class PipelineChooser(Optimizer):
         self.config = config
         self.model_chooser = model_chooser if model_chooser is not None else ModelChooser(config)
         self._search_space: PipelineSearchSpace = PipelineSearchSpace()
+
+    @property
+    def results(self) -> Iterator[OptimizationResults]:
+        yield from self.model_chooser.results
     
     @property
     def search_space(self) -> PipelineSearchSpace:

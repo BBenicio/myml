@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Literal
+from typing import Iterable, Literal, Optional, Callable, Any
 from myml.utils import ProblemType
 
 
@@ -54,3 +54,8 @@ def translate_metric(metric: Metric | MetricConfig, value: float) -> float:
     elif mtc.is_minimize:
         return value
     raise ValueError()
+
+def sort_by_metric(to_sort: Iterable, metric: Metric | MetricConfig, key: Optional[Callable[[Any], Any]] = None) -> Iterable:
+    mtc: MetricConfig = _get_metric_config(metric)
+    return sorted(to_sort, key=key, reverse=mtc.is_maximize)
+    
