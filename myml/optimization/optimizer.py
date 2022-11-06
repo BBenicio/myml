@@ -211,11 +211,20 @@ class CashOptimizer(ModelChooser):
         
         return total_space
 
-    def _setup_estimator(self, params: Dict[str, Any]) -> BaseEstimator:
+    def _filter_relevant_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         estimator = params['[estimator]']
-        estimator.random_state = self.config.seed
         relevant_params = {k.split('/')[1]: params[k] for k in params if estimator.__class__.__name__.lower() in k}
+        return relevant_params
+
+    def _get_estimator_from_params(self, params: Dict[str, Any]) -> BaseEstimator:
+        estimator = params['[estimator]']
+        relevant_params = self._filter_relevant_params(params)
         estimator.set_params(**relevant_params)
+        return estimator
+
+    def _setup_estimator(self, params: Dict[str, Any]) -> BaseEstimator:
+        estimator = self._get_estimator_from_params(params)
+        estimator.random_state = self.config.seed
         return estimator if self.preprocess is None else make_pipeline(self.preprocess, estimator)
 
     def _get_objective(self, X, y) -> Callable[..., float]:
@@ -249,9 +258,8 @@ class CashOptimizer(ModelChooser):
 
     def _make_results(self, result: Any) -> OptimizationResults:
         params = self._make_params(result.x)
-        estimator = params['[estimator]']
-        relevant_params = {k.split('/')[1]: params[k] for k in params if k.split('/')[0] == estimator.__class__.__name__.lower()}
-        estimator.set_params(**relevant_params)
+        estimator = self._get_estimator_from_params(params)
+        relevant_params = self._filter_relevant_params(params)
         
         return OptimizationResults(
             evaluation=translate_metric(self.config.metric, result.fun),
