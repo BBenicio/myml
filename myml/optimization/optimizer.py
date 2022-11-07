@@ -16,6 +16,32 @@ from myml.utils import Features, Target
 
 
 class OptimizationResults(NamedTuple):
+    """
+    Results of an optimization run.
+
+    Parameters
+    ----------
+    evaluation : float
+        Score achieved on the metric being optimized.
+    hyperparameters : dict of {str: Any}, default {}
+        Hyperparameters settings for the estimator
+    estimator : sklearn.base.BaseEstimator, optional
+        Estimator used on the optimization
+    column_transformer : sklearn.compose.ColumnTransformer, optional
+        Preprocessing step used on the optimization
+
+    Attributes
+    ----------
+    evaluation : float
+        Score achieved on the metric being optimized.
+    hyperparameters : dict of {str: Any}
+        Hyperparameters settings for the estimator
+    estimator : sklearn.base.BaseEstimator
+        Estimator used on the optimization
+    column_transformer : sklearn.compose.ColumnTransformer
+        Preprocessing step used on the optimization
+    """
+
     evaluation: float
     hyperparameters: Dict[str, Any] = {}
     estimator: BaseEstimator = None
@@ -23,6 +49,39 @@ class OptimizationResults(NamedTuple):
 
 
 class OptimizationConfig(NamedTuple):
+    """
+    Configuration for the optimizer.
+
+    Parameters
+    ----------
+    metric : Metric
+        Metric to optimize
+    evaluations : int, default 100
+        Number of evaluations to perform on the optimization, more
+        evaluations usually mean a better result, but more costly.
+    cv : int, default 5
+        Number of folds to evaluate using k-fold cross-validation.
+    n_jobs : int, default 1
+        Number of computing processors to use.
+    seed: int, optional
+        Seed for the random number generator. Set when you need to
+        reproduce the results.
+    
+    Attributes
+    ----------
+    metric : Metric
+        Metric to optimize
+    evaluations : int
+        Number of evaluations to perform on the optimization, more
+        evaluations usually mean a better result, but more costly.
+    cv : int
+        Number of folds to evaluate using k-fold cross-validation.
+    n_jobs : int
+        Number of computing processors to use.
+    seed: int
+        Seed for the random number generator. Set when you need to
+        reproduce the results.
+    """
     metric: Metric
     evaluations: int = 100
     cv: int = 5
@@ -31,7 +90,19 @@ class OptimizationConfig(NamedTuple):
 
 
 class Optimizer(ABC):
+    """
+    An optimizer of machine learning models.
+
+    Attributes
+    ----------
+    results : Iterator[OptimizationResults]
+        Results from each step of optimization
+    search_space : SearchSpace
+        Search space of the optimizer.
+    """
+    
     progress_callback: Callable[[Dict[str, Any], int], None] = None
+    """ Function to call on each optimization step to report partial results. """
 
     @property
     @abstractmethod
@@ -53,11 +124,44 @@ class Optimizer(ABC):
         """ Optimize given the features and targets. """
     
     def _update_progress(self, data: Dict[str, Any] = None, total: int = 0):
+        """
+        Report partial progress to the callback registered.
+
+        Parameters
+        ----------
+        data : dict of {str: Any}, optional
+            The data to send on the partial report.
+        total : int, default 0
+            The total count of optimization steps that will be run.
+        """
         if self.progress_callback is not None:
             self.progress_callback(data, total)
 
 
 class HyperparameterOptimizer(Optimizer):
+    """
+    An optimizer for algorithm hyperparameters.
+
+    Parameters
+    ----------
+    estimator : sklearn.base.BaseEstimator
+        The algorithm to optimize the hyperparameters.
+    config : OptimizationConfig
+        Configuration for the optimization to run.
+    
+    Attributes
+    ----------
+    estimator : sklearn.base.BaseEstimator
+        The algorithm to optimize the hyperparameters.
+    config : OptimizationConfig
+        Configuration for the optimization to run.
+    results : Iterator[OptimizationResults]
+        Results from each step of optimization
+    search_space : HyperparameterSearchSpace
+        Search space of the optimizer.
+    preprocess : sklearn.base.TransformerMixin
+        Preprocessor for the features before passing to the model.
+    """
     def __init__(self, estimator: BaseEstimator, config: OptimizationConfig) -> None:
         self.estimator = estimator
         self.config = config
@@ -78,11 +182,40 @@ class HyperparameterOptimizer(Optimizer):
         self._search_space = search_space
 
     def _setup_estimator(self, params: Dict[str, Any]) -> BaseEstimator:
+        """
+        Get the estimator set with the hyperparameters and preprocessor.
+
+        Parameters
+        ----------
+        params : dict of {str: Any}
+            Hyperparameters got from an optimization step.
+        
+        Returns
+        -------
+        sklearn.base.BaseEstimator
+            The estimator set with the given hyperparameters and
+            preprocessor.
+        """
         self.estimator.random_state = self.config.seed
         self.estimator.set_params(**params)
         return self.estimator if self.preprocess is None else make_pipeline(self.preprocess, self.estimator)
 
-    def _get_objective(self, X, y) -> Callable[..., float]:
+    def _get_objective(self, X: Features, y: Target) -> Callable[..., float]:
+        """
+        Get the objective function for the optimization.
+
+        Parameters
+        ----------
+        X : Features
+            Features to use for model training
+        y : Target
+            Target values for model training
+
+        Returns
+        -------
+        Callable
+            Objective function compatible with sckit-optimize.
+        """
         @use_named_args(list(self._search_space))
         def objective(**params) -> float:
             estimator = self._setup_estimator(params)
@@ -101,17 +234,51 @@ class HyperparameterOptimizer(Optimizer):
         return objective
 
     def _optimization_step(self, result: Any) -> None:
+        """
+        Store and report the results from each optimization step.
+
+        Parameters
+        ----------
+        result : scipy.optimize.OptimizeResult
+            Result from the optimization step.
+        """
         self._results.append(self._make_results(result))
         self._best_result = min(result.fun, self._best_result)
         self._update_progress({'best': self._best_result}, self.config.evaluations)
 
-    def _make_params(self, params_list: List[Any]) -> Dict[str, Any]:
-        params = {}
-        for dimension, value in zip(self._search_space, params_list):
-            params[dimension.name] = value
-        return params
+    def _make_params(self, params: List[Any]) -> Dict[str, Any]:
+        """
+        Transform the hyperparameters from a list to a dictionary.
+
+        Parameters
+        ----------
+        params : list
+            List of hyperparameters settings to transform.
+        
+        Returns
+        -------
+        dict of {str: Any}
+            Hyperparameters in a dictionary of `{name: value}`
+        """
+        transformed = {}
+        for dimension, value in zip(self._search_space, params):
+            transformed[dimension.name] = value
+        return transformed
 
     def _make_results(self, result: Any) -> OptimizationResults:
+        """
+        Transform the results into `OptimizationResults`.
+
+        Parameters
+        ----------
+        result : scipy.optimize.OptimizeResult
+            Result from the scikit-optimize optimization run.
+        
+        Returns
+        -------
+        OptimizationResults
+            Results from the hyperparameter optimization.
+        """
         params = self._make_params(result.x)
         self.estimator.set_params(**params)
         
@@ -123,6 +290,21 @@ class HyperparameterOptimizer(Optimizer):
         )
 
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
+        """
+        Optimize the hyperparameters on the given dataset.
+
+        Parameters
+        ----------
+        X : Features
+            Features to use for model training
+        y : Target
+            Target values for model training
+        
+        Returns
+        -------
+        OptimizationResults
+            Results from the hyperparameter optimization.
+        """
         self._best_result = np.inf
         result = gp_minimize(
             self._get_objective(X, y),
@@ -136,6 +318,29 @@ class HyperparameterOptimizer(Optimizer):
 
 
 class ModelChooser(Optimizer):
+    """
+    Optimizer for choosing algorithms and optimizing hyperparameters.
+
+    Parameters
+    ----------
+    config : OptimizationConfig
+        Configuration for the optimization to run.
+    optimizer : HyperparameterOptimizer, optional
+        Hyperparameter optimizer to use.
+    
+    Attributes
+    ----------
+    config : OptimizationConfig
+        Configuration for the optimization to run.
+    optimizer : HyperparameterOptimizer
+        Hyperparameter optimizer to use.
+    results : Iterator[OptimizationResults]
+        Results from each step of optimization
+    search_space : ModelSearchSpace
+        Search space of the optimizer.
+    preprocess : sklearn.base.TransformerMixin
+        Preprocessor for the features before passing to the model.
+    """
     def __init__(self, config: OptimizationConfig, optimizer: Optional[HyperparameterOptimizer] = None) -> None:
         self.config = config
         self.optimizer = optimizer if optimizer is not None else HyperparameterOptimizer(BaseEstimator(), config)
@@ -159,14 +364,45 @@ class ModelChooser(Optimizer):
     
     @preprocess.setter
     def preprocess(self, value: TransformerMixin):
+        """ Preprocessor for the features before passing to the model. """
         self.optimizer.preprocess = value
 
     def _optimize_hyperparameters(self, estimator: BaseEstimator, X: Features, y: Target) -> OptimizationResults:
+        """
+        Optimize the hyperparameters of the given estimator.
+
+        Parameters
+        ----------
+        estimator : sklearn.base.BaseEstimator
+            estimator to optimze the hyperparameters
+        X : Features
+            Features to use for model training
+        y : Target
+            Target values for model training
+        Returns
+        -------
+        OptimizationResults
+            Results from the hyperparameter optimization.
+        """
         self.optimizer.estimator = estimator
         self.optimizer.search_space = self._search_space[estimator]
         return self.optimizer.optimize(X, y)
 
     def optimize(self, X: Features, y: Target) -> OptimizationResults:
+        """
+        Choose the best algorithm and hyperparameters for the data.
+
+        Parameters
+        ----------
+        X : Features
+            Features to use for model training
+        y : Target
+            Target values for model training
+        Returns
+        -------
+        OptimizationResults
+            Results from the algorithm optimization.
+        """
         best_results: OptimizationResults = OptimizationResults(evaluation=None)
         
         for estimator in self._search_space:
@@ -181,6 +417,25 @@ class ModelChooser(Optimizer):
 
 
 class CashOptimizer(ModelChooser):
+    """
+    Combined Algorithm Selection and Hyperparameter optimization (CASH).
+
+    Parameters
+    ----------
+    config : OptimizationConfig
+        Configuration for the optimization to run.
+    
+    Attributes
+    ----------
+    config : OptimizationConfig
+        Configuration for the optimization to run.
+    results : Iterator[OptimizationResults]
+        Results from each step of optimization
+    search_space : ModelSearchSpace
+        Search space of the optimizer.
+    preprocess : sklearn.base.TransformerMixin
+        Preprocessor for the features before passing to the model.
+    """
     def __init__(self, config: OptimizationConfig) -> None:
         super().__init__(config, None)
         self._preprocess: TransformerMixin = None
