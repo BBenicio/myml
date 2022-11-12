@@ -50,7 +50,7 @@ class AutoResults(NamedTuple):
 
     Parameters
     ----------
-    pipeline : Pipeline
+    pipeline : sklearn.pipeline.Pipeline
         The pipeline built for the data
     cv_results : float
         Results from the cross-validation on the training data.
@@ -59,7 +59,7 @@ class AutoResults(NamedTuple):
 
     Attributes
     ----------
-    pipeline : Pipeline
+    pipeline : sklearn.pipeline.Pipeline
         The pipeline built for the data
     cv_results : float
         Results from the cross-validation on the training data.
@@ -280,23 +280,95 @@ class AutoPipelineChooser:
 
 
 class AutoML(AutoPipelineChooser):
+    """
+    Auto optimizer for data pipleines and models with minimal setup.
+
+    Parameters
+    ----------
+    config : AutoConfig
+        Configuration for the automatic optimizer.
+    test_size : float, default 0.3
+        Percentage of the data to reserve for the testing set.
+
+    Attributes
+    ----------
+    config : AutoConfig
+        Configuration for the automatic optimizer.
+    test_size : float, default 0.3
+        Percentage of the data to reserve for the testing set.
+    """
+
     def __init__(self, config: AutoConfig, test_size: float = 0.3) -> None:
         super().__init__(config)
         self.test_size = test_size
 
     def _get_default_or_override(self, X: Features, types: List[str], override: Optional[List[str]] = None) -> List:
+        """
+        Get the feature labels by type or override it with a custom list.
+
+        Parameters
+        ----------
+            X : Features
+                Features that will be served to the models.
+            types : list of str
+                Data types to keep.
+            override : list of str, optional
+                List of feature labels to keep. If provided, won't check
+                their types.
+
+        Returns
+        -------
+            list
+                A list of the selected feature labels.
+        """
         if override is None:
             return get_features_labels(filter_by_types(X, types))
         else:
             return override
 
     def _setup_features(self, X: Features, override_numeric_features: Optional[List[str]] = None, override_categorical_features: Optional[List[str]] = None) -> None:
+        """
+        Setup the numeric and categorical features for the optimization.
+
+        Parameters
+        ----------
+        X : Features
+            Features that will be served to the models.
+        override_numeric_features : list of str, optional
+            Numeric feature labels. Provide to override type checking.
+        override_categorical_features : list of str, optional
+            Categorical feature labels. Provide to override type checking.
+        """
         self.numeric_features = self._get_default_or_override(
             X, ['number'], override_numeric_features)
         self.categorical_features = self._get_default_or_override(
             X, ['object', 'category', 'bool'], override_categorical_features)
 
     def _split_train_test(self, X: Features, y: Target) -> Tuple[Features, Features, Target, Target]:
+        """
+        Split the data into training and testing datasets.
+
+        When working with classification problems, do a stratified split
+        by the target variable.
+
+        Parameters
+        ----------
+        X : Features
+            Predictive variables.
+        y : Target
+            Target variable.
+
+        Returns
+        -------
+        X_train : Features
+            Predictive variables for the training set.
+        X_test : Features
+            Predictive variables for the testing set.
+        y_train : Target
+            Target variable for the training set.
+        y_test : Target
+            Target variable for the testing set.
+        """
         if self.config.problem_type == ProblemType.classification:
             X_train, X_test, y_train, y_test = train_test_split(
                 X, y, test_size=self.test_size, random_state=self.config.optimization_config.seed, stratify=y)
@@ -306,6 +378,27 @@ class AutoML(AutoPipelineChooser):
         return X_train, X_test, y_train, y_test
 
     def _fit_and_test(self, estimator: Pipeline, X_train: Features, y_train: Target, X_test: Features, y_test: Target) -> float:
+        """
+        Fit a pipeline on the trainig data and test on the test set.
+
+        Parameters
+        ----------
+        estimator : sklearn.pipeline.Pipeline
+            Pipeline to fit and evaluate.
+        X_train : Features
+            Predictive variables for the training set.
+        X_test : Features
+            Predictive variables for the testing set.
+        y_train : Target
+            Target variable for the training set.
+        y_test : Target
+            Target variable for the testing set.
+
+        Returns
+        -------
+        float
+            The score of the pipeline on the test set.
+        """
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore')
             estimator.fit(X_train, y_train)
@@ -314,6 +407,28 @@ class AutoML(AutoPipelineChooser):
         return scorer(estimator, X_test, y_test)
 
     def optimize(self, X: Features, y: Target, override_numeric_features: Optional[List[str]] = None, override_categorical_features: Optional[List[str]] = None) -> AutoResults:
+        """
+        Optimize the data pipeline and algorithm for the given data.
+
+        Find the data pipeline, algorithm and hyperparameters that get the
+        best performing cross-validation metrics along with testing scores.
+
+        Parameters
+        ----------
+        X : Features
+            Features to use for model training
+        y : Target
+            Target values for model training
+        override_numeric_features : list of str, optional
+            Numeric feature labels. Provide to override type checking.
+        override_categorical_features : list of str, optional
+            Categorical feature labels. Provide to override type checking.
+
+        Returns
+        -------
+        AutoResults
+            Results from the automatic optimization.
+        """
         self._setup_features(X, override_numeric_features,
                              override_categorical_features)
         X_train, X_test, y_train, y_test = self._split_train_test(X, y)
@@ -327,15 +442,71 @@ class AutoML(AutoPipelineChooser):
 
 
 class AutoVoting(AutoML):
+    """
+    Auto optimizer for an ensemble of data pipleines and models.
+
+    Fit data pipelines and machine learning models to the data and build
+    a voting estimator out of the best performing models.
+
+    Parameters
+    ----------
+    config : AutoConfig
+        Configuration for the automatic optimizer.
+    test_size : float, default 0.3
+        Percentage of the data to reserve for the testing set.
+    voting_count : int, default 20
+        Number of estimators to place in the final voter.
+    max_candidates : int, default 60
+        How many of the best fit models to consider when evaluating which
+        to place on the voter.
+
+    Attributes
+    ----------
+    config : AutoConfig
+        Configuration for the automatic optimizer.
+    test_size : float, default 0.3
+        Percentage of the data to reserve for the testing set.
+    voting_count : int, default 20
+        Number of estimators to place in the final voter.
+    max_candidates : int, default 60
+        How many of the best fit models to consider when evaluating which
+        to place on the voter.
+    """
     def __init__(self, config: AutoConfig, test_size: float = 0.3, voting_count: int = 20, max_candidates: int = 60) -> None:
         super().__init__(config, test_size)
         self.voting_count = voting_count
         self.max_candidates = max_candidates
 
     def _get_voting_estimators(self, pipelines: List[Pipeline]) -> List[Tuple[str, Pipeline]]:
+        """
+        Get a list where each pipeline is named.
+
+        Parameters
+        ----------
+        pipelines : list of sklearn.pieline.Pipeline
+            Pipelines to name and return.
+        
+        Returns
+        -------
+        list of tuple of (str, sklearn.pipeline.Pipeline)
+            List of names and pipelines.
+        """
         return [(f'pipeline{i}', pipe) for i, pipe in enumerate(pipelines)]
 
     def _get_voter(self, pipelines: List[Pipeline]) -> Pipeline:
+        """
+        Build a voting estimator from the pipelines.
+
+        Parameters
+        ----------
+        pipelines : list of sklearn.pipeline.Pipeline
+            Pipelines to place on the voter.
+        
+        Returns
+        -------
+        sklearn.pipeline.Pipeline
+            Pipeline with a single step that is a voting estimator.
+        """
         voting: VotingClassifier | VotingRegressor = None
         if self.config.problem_type is ProblemType.classification:
             voting = VotingClassifier(
@@ -345,6 +516,29 @@ class AutoVoting(AutoML):
         return make_pipeline(voting)
 
     def _get_best_candidate(self, current: List[Pipeline], candidates: List[Pipeline], X: Features, y: Target) -> AutoResults:
+        """
+        Get the candidate with best cross validation scores on the voter.
+
+        Evaluate the impact of each candidate on the voter by adding each
+        of them to the voting estimator and retrieving cross validation
+        scores.
+
+        Parameters
+        ----------
+        current : list of sklearn.pipeline.Pipeline
+            Estimators that are currently part of the voter.
+        candidates : list of sklearn.pipeline.Pipeline
+            Candidate estimators to evaluate.
+        X : Features
+            Predictive variables for the training data.
+        y : Target
+            Targets for the training data.
+        
+        Returns
+        -------
+        AutoResults
+            Results from the evaluation with the best candidate and score.
+        """
         best_candidate: Pipeline = None
         best_score: float = None
 
@@ -367,6 +561,17 @@ class AutoVoting(AutoML):
         return AutoResults(best_candidate, best_score)
 
     def _get_candidates(self) -> List[Pipeline]:
+        """
+        Get the list of candidates to evaluate based on the maximum amount.
+
+        Get the top `AutoVoting.max_candidates` found when optimizing on
+        the data, sorted from best to worst score.
+
+        Returns
+        ----------
+        list of sklearn.pipeline.Pipeline
+            Restricted list of candidates to evaluate.
+        """
         results = list(self.pipeline_chooser.results)
         sorted_results: List[OptimizationResults] = sort_by_metric(
             results, self.config.optimization_config.metric, key=lambda res: res.evaluation)
@@ -374,17 +579,58 @@ class AutoVoting(AutoML):
         return [make_pipeline(results.column_transformer, results.estimator) for results in sorted_results]
 
     def _compose_estimators(self, results: AutoResults, X: Features, y: Target) -> Tuple[List[Pipeline], float]:
+        """
+        Create a list of the estimators for the voter in a greedy manner.
+
+        Parameters
+        ----------
+        results : AutoResults
+            Results from the optimization for the pipelines on the data.
+        X : Features
+            Predictive features for the optimization.
+        y : Target
+            Target variable for the optimization.
+        
+        Returns
+        -------
+        list of sklearn.pipeline.Pipeline
+            Estimators chosen for the voting.
+        float
+            Cross validation score for the estimators selected.
+        """
         current = [results.pipeline]
         candidates = self._get_candidates()
         cv_score: float = None
         # the first estimator is already chosen
-        for i in range(1, self.voting_count):
+        for _ in range(1, self.voting_count):
             results = self._get_best_candidate(current, candidates, X, y)
             cv_score = results.cv_results
             current += [results.pipeline]
         return current, cv_score
 
     def optimize(self, X: Features, y: Target, override_numeric_features: Optional[List[str]] = None, override_categorical_features: Optional[List[str]] = None) -> AutoResults:
+        """
+        Optimize the data pipeline and algorithm for the given data.
+
+        Find the data pipeline, algorithm and hyperparameters that get the
+        best performing cross-validation metrics along with testing scores.
+
+        Parameters
+        ----------
+        X : Features
+            Features to use for model training
+        y : Target
+            Target values for model training
+        override_numeric_features : list of str, optional
+            Numeric feature labels. Provide to override type checking.
+        override_categorical_features : list of str, optional
+            Categorical feature labels. Provide to override type checking.
+
+        Returns
+        -------
+        AutoResults
+            Results from the automatic voting optimization.
+        """
         best_results = super().optimize(X, y, override_numeric_features,
                                         override_categorical_features)
         X_train, X_test, y_train, y_test = self._split_train_test(X, y)
@@ -400,6 +646,32 @@ class AutoVoting(AutoML):
 
 
 class AutoProgressBar:
+    """
+    A progress bar for the auto optimizer.
+
+    Attach a progress bar to any auto optimizer to keep track of the time
+    running and estimate time remaining to finish the optimizations along
+    with updated metrics.
+
+    Parameters
+    ----------
+    name : str
+        The name to display on the progress bar.
+    auto : AutoPipelineChooser
+        The auto optimizer to attatch the progress bar.
+
+    Attributes
+    ----------
+    name : str
+        The name to display on the progress bar.
+    pipeline : OptimizerProgressBar
+        Progress bar for the pipeline optimizer.
+    model : OptimizerProgressBar
+        Progress bar for the algorithm optimizer.
+    hyperparameter : OptimizerProgressBar
+        Progress bar for the hyperparameter optimizer.
+    """
+
     def __init__(self, name: str, auto: AutoPipelineChooser) -> None:
         self.name = name
         self.pipeline = OptimizerProgressBar(
