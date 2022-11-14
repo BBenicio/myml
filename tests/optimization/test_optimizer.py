@@ -7,7 +7,7 @@ from skopt.space import Real, Integer
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, FunctionTransformer
 
 
-def test_hyperparameteroptimizer(data: pd.DataFrame, target: pd.Series):
+def test_hyperparameteroptimizer(classification_data: pd.DataFrame, classification_target: pd.Series):
     est = GradientBoostingClassifier(n_estimators=50, random_state=0)
     config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=2, seed=0)
     optimizer = HyperparameterOptimizer(est, config)
@@ -17,12 +17,12 @@ def test_hyperparameteroptimizer(data: pd.DataFrame, target: pd.Series):
         min_samples_split = Integer(2, 100),
         min_samples_leaf = Integer(1, 100)
     )
-    results = optimizer.optimize(data, target)
+    results = optimizer.optimize(classification_data, classification_target)
     
     assert results.hyperparameters['max_depth'] == 3
     assert results.evaluation >= 0.8
 
-def test_modelchooser(data: pd.DataFrame, target: pd.Series):
+def test_modelchooser(classification_data: pd.DataFrame, classification_target: pd.Series):
     config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=2, seed=0)
     chooser = ModelChooser(config)
     
@@ -39,13 +39,13 @@ def test_modelchooser(data: pd.DataFrame, target: pd.Series):
         min_samples_leaf = Integer(1, 100)
     )
 
-    results = chooser.optimize(data, target)
+    results = chooser.optimize(classification_data, classification_target)
 
     assert isinstance(results.estimator, GradientBoostingClassifier)
     assert results.hyperparameters['max_depth'] == 3
     assert results.evaluation >= 0.8
 
-def test_pipelinechooser(data: pd.DataFrame, target: pd.Series):
+def test_pipelinechooser(classification_data: pd.DataFrame, classification_target: pd.Series):
     config = OptimizationConfig(Metric.f1, evaluations=10, cv=5, n_jobs=2, seed=0)
 
     chooser = PipelineChooser(config)
@@ -69,13 +69,13 @@ def test_pipelinechooser(data: pd.DataFrame, target: pd.Series):
         min_samples_leaf = Integer(1, 100)
     )
 
-    results = chooser.optimize(data, target)
+    results = chooser.optimize(classification_data, classification_target)
     assert isinstance(results.column_transformer.transformers[0][1], MinMaxScaler)
     assert isinstance(results.estimator, GradientBoostingClassifier)
     assert results.hyperparameters['max_depth'] == 2
     assert results.evaluation >= 0.9
 
-def test_cashoptimizer(data: pd.DataFrame, target: pd.Series):
+def test_cashoptimizer(classification_data: pd.DataFrame, classification_target: pd.Series):
     config = OptimizationConfig(Metric.f1, evaluations=20, cv=5, n_jobs=2, seed=0)
     optimizer = CashOptimizer(config)
     
@@ -92,7 +92,7 @@ def test_cashoptimizer(data: pd.DataFrame, target: pd.Series):
         min_samples_leaf = Integer(1, 100)
     )
 
-    results = optimizer.optimize(data, target)
+    results = optimizer.optimize(classification_data, classification_target)
 
     assert isinstance(results.estimator, GradientBoostingClassifier)
     assert results.hyperparameters['max_depth'] == 2
