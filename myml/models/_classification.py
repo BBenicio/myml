@@ -28,10 +28,6 @@ estimators[GaussianNB()] = HyperparameterSearchSpace(
     priors=Categorical([None])
 )
 
-estimators[MultinomialNB()] = HyperparameterSearchSpace(
-    fit_prior=Categorical([False, True])
-)
-
 estimators[RandomForestClassifier()] = HyperparameterSearchSpace(
     n_estimators=Integer(10, 200),
     criterion=Categorical(['gini', 'entropy']),
