@@ -23,7 +23,7 @@ estimators[LinearRegression()] = HyperparameterSearchSpace(
 
 estimators[ElasticNet()] = HyperparameterSearchSpace(
     alpha=Real(0, 10),
-    l1_ration=Real(0, 1),
+    l1_ratio=Real(0, 1),
     max_iter=Integer(100, 100000, 'log-uniform')
 )
 
